@@ -1,0 +1,8 @@
+#define LOGIN_CODE "LOGIN\n"
+#define LOGIN_SUCCESS_CODE "LOGIN_SUCCESS\n"
+#define LOGIN_FAIL_CODE "LOGIN_FAIL\n"
+#define WAIT_CODE "WAIT\n"
+#define MATCHED_CODE "MATCHED"
+#define WIN_CODE "WIN"
+#define DRAW_CODE "DRAW"
+#define NEXT_CODE "NEXT"
