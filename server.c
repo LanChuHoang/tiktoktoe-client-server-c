@@ -29,6 +29,14 @@ int isValidUsername(char *username)
   return findRoom(rooms, username) == -1;
 }
 
+void cleanupHandler(void *arg)
+{
+  int cfd = *((int *)arg);
+  printf("Called clean-up handler %d, %d\n", (int)pthread_self(), cfd);
+  close(cfd);
+  free(arg);
+}
+
 char *handleLogin(int cfd)
 {
   int result;
@@ -43,8 +51,10 @@ char *handleLogin(int cfd)
     clearInput(buffer);
 
     // Check quit command
-    if (result <= 0 || strcasecmp(buffer, "quit") == 0)
+    if (result <= 0 || strcasecmp(buffer, QUIT_CODE) == 0)
+    {
       return NULL;
+    }
 
     // Check username
     if (isValidUsername(buffer))
@@ -77,14 +87,20 @@ void sendMatchedResponse(Room room)
 
 void sendDrawResponse(Room room)
 {
-  send(room.player1.cfd, DRAW_CODE, strlen(DRAW_CODE), 0);
-  send(room.player2.cfd, DRAW_CODE, strlen(DRAW_CODE), 0);
+  char drawCode[100];
+  char encodedBoard[10];
+  stringifyBoard(encodedBoard, room.board);
+  sprintf(drawCode, "%s %s\n", DRAW_CODE, encodedBoard);
+  send(room.player1.cfd, drawCode, strlen(drawCode), 0);
+  send(room.player2.cfd, drawCode, strlen(drawCode), 0);
 }
 
 void sendWinResponse(Room room)
 {
   char winCode[100];
-  sprintf(winCode, "%s %d\n", WIN_CODE, room.currentPlayer);
+  char encodedBoard[10];
+  stringifyBoard(encodedBoard, room.board);
+  sprintf(winCode, "%s %d %s\n", WIN_CODE, room.currentPlayer, encodedBoard);
   send(room.player1.cfd, winCode, strlen(winCode), 0);
   send(room.player2.cfd, winCode, strlen(winCode), 0);
 }
@@ -92,10 +108,19 @@ void sendWinResponse(Room room)
 void sendNextTurnResponse(Room room)
 {
   char nextCode[100];
-  sprintf(nextCode, "%s %d \n", NEXT_CODE, room.currentPlayer);
+  char encodedBoard[10];
+  stringifyBoard(encodedBoard, room.board);
+  sprintf(nextCode, "%s %d %s\n", NEXT_CODE, room.currentPlayer, encodedBoard);
 
   send(room.player1.cfd, nextCode, strlen(nextCode), 0);
   send(room.player2.cfd, nextCode, strlen(nextCode), 0);
+}
+
+int isMyTurn(Room room, pthread_t selfID)
+{
+  return room.currentPlayer == 0
+             ? room.player1.threadID == selfID
+             : room.player2.threadID == selfID;
 }
 
 void *handleClient(void *arg)
@@ -103,19 +128,20 @@ void *handleClient(void *arg)
   int cfd = *((int *)arg);
   char buffer[1024];
   int result;
+  pthread_t myThreadID = pthread_self();
+
+  // Setup cleanup handler
+  pthread_cleanup_push(cleanupHandler, arg);
 
   char *username = handleLogin(cfd);
   if (username == NULL)
-  {
-    free(arg);
-    close(cfd);
     return NULL;
-  }
 
   // Check waiting player -> wait for oponent or create room and start game
   Player newPlayer;
-  newPlayer.cfd = cfd;
   strcpy(newPlayer.username, username);
+  newPlayer.cfd = cfd;
+  newPlayer.threadID = myThreadID;
 
   int roomIndex = -1;
   if (waitingPlayer == NULL)
@@ -130,6 +156,8 @@ void *handleClient(void *arg)
     roomIndex = createRoom(rooms, *waitingPlayer, newPlayer);
     numRooms++;
     waitingPlayer = NULL;
+    printf("Create room: %d for %d and %d\n", roomIndex, (int)rooms[roomIndex].player1.threadID, (int)rooms[roomIndex].player2.threadID);
+    fflush(stdout);
 
     // Send matched code
     sendMatchedResponse(rooms[roomIndex]);
@@ -141,24 +169,45 @@ void *handleClient(void *arg)
     memset(buffer, 0, sizeof(buffer));
     result = recv(cfd, buffer, sizeof(buffer), 0);
     clearInput(buffer);
-    if (result <= 0 || strcasecmp(buffer, "quit") == 0)
+    if (roomIndex == -1)
+    {
+      roomIndex = findRoom(rooms, newPlayer.username);
+      // Not found any room but client sent position
+      if (roomIndex == -1)
+      {
+        send(cfd, WAIT_CODE, strlen(WAIT_CODE), 0);
+        continue;
+      }
+    }
+    if (result <= 0 || strcasecmp(buffer, QUIT_CODE) == 0)
       break;
 
-    if (roomIndex == -1)
-      roomIndex = findRoom(rooms, newPlayer.username);
+    // Check turn
+    if (!isMyTurn(rooms[roomIndex], myThreadID))
+    {
+      send(cfd, WAIT_CODE, strlen(WAIT_CODE), 0);
+      continue;
+    }
 
     // Update current state
     int position = atoi(buffer);
+    if (!isValidMove(rooms[roomIndex].board, position))
+    {
+      send(cfd, INVALID_MOVE_CODE, strlen(INVALID_MOVE_CODE), 0);
+      continue;
+    }
     rooms[roomIndex].board[position] = rooms[roomIndex].currentPlayer == 0 ? 'X' : 'O';
     if (isDraw(rooms[roomIndex].board))
     {
       // Send draw code
       sendDrawResponse(rooms[roomIndex]);
+      break;
     }
     else if (isWin(rooms[roomIndex].board))
     {
       // Send win code
       sendWinResponse(rooms[roomIndex]);
+      break;
     }
     else
     {
@@ -169,18 +218,15 @@ void *handleClient(void *arg)
       sendNextTurnResponse(rooms[roomIndex]);
     }
 
-    for (int i = 0; i < 9; ++i)
-    {
-      if (rooms[roomIndex].board[i] == 0)
-        printf("_ ");
-      else
-        printf("%c ", rooms[roomIndex].board[i]);
-      if ((i + 1) % 3 == 0)
-        printf("\n");
-    }
+    printBoard(rooms[roomIndex].board);
   }
-  free(arg);
-  close(cfd);
+
+  pthread_t id = getOponentThreadID(rooms[roomIndex], myThreadID);
+  resetRoom(&rooms[roomIndex]);
+  numRooms--;
+  printf("Cancling thread %d\n", (int)id);
+  pthread_cancel(id);
+  pthread_cleanup_pop(1);
   return NULL;
 }
 
@@ -211,7 +257,7 @@ int main(int argc, char **argv)
       *arg = tmp;
       pthread_create(&threadIDs[numThread], NULL, handleClient, arg);
 
-      printf("New connection handle by %d\n", (int)threadIDs[numThread]);
+      printf("New connection handle by %d, %d\n", (int)threadIDs[numThread], tmp);
       numThread++;
     }
   }
