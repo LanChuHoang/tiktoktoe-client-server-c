@@ -9,7 +9,8 @@
 #include <sys/wait.h>
 #include <pthread.h>
 #include "helpers.h"
-#include "response.h"
+#include "responseCode.h"
+#include "requestCode.h"
 #include "Room.h"
 
 Room rooms[MAX_ROOM];
@@ -41,8 +42,9 @@ char *handleLogin(int cfd)
 {
   int result;
   char buffer[1024];
+  char username[MAX_USERNAME];
   // Send login code
-  send(cfd, LOGIN_CODE, strlen(LOGIN_CODE), 0);
+  send(cfd, CONNECT_SUCCESS_RES_CODE, strlen(CONNECT_SUCCESS_RES_CODE), 0);
   while (1)
   {
     // Receive username
@@ -51,37 +53,39 @@ char *handleLogin(int cfd)
     clearInput(buffer);
 
     // Check quit command
-    if (result <= 0 || strcasecmp(buffer, QUIT_CODE) == 0)
+    if (result <= 0 || strcasecmp(buffer, QUIT_REQ_CODE) == 0)
     {
+      send(cfd, QUIT_RES_CODE, strlen(QUIT_RES_CODE), 0);
       return NULL;
     }
 
     // Check username
-    if (isValidUsername(buffer))
+    strcpy(username, buffer + 6);
+    printf("%s\n", username);
+    if (isValidLoginCommand(buffer) && isValidUsername(buffer))
     {
       // Send success login code
-      send(cfd, LOGIN_SUCCESS_CODE, strlen(LOGIN_SUCCESS_CODE), 0);
-
-      char *result = (char *)malloc((strlen(buffer) + 1) * sizeof(char));
-      strcpy(result, buffer);
-      return result;
+      send(cfd, LOGIN_SUCCESS_RES_CODE, strlen(LOGIN_SUCCESS_RES_CODE), 0);
+      break;
     }
     else
     {
       // Send failure login code
-      send(cfd, LOGIN_FAIL_CODE, strlen(LOGIN_FAIL_CODE), 0);
+      send(cfd, LOGIN_FAIL_RES_CODE, strlen(LOGIN_FAIL_RES_CODE), 0);
     }
   }
+
+  char *returnValue = (char *)malloc((strlen(username) + 1) * sizeof(char));
+  strcpy(returnValue, username);
+  return returnValue;
 }
 
 void sendMatchedResponse(Room room)
 {
   char matchedCode[100];
-
-  sprintf(matchedCode, "%s 0 %d \n", MATCHED_CODE, room.currentPlayer);
+  sprintf(matchedCode, "%s 0 %d\r", MATCHED_RES_CODE, room.currentPlayer);
   send(room.player1.cfd, matchedCode, strlen(matchedCode), 0);
-
-  sprintf(matchedCode, "%s 1 %d \n", MATCHED_CODE, room.currentPlayer);
+  sprintf(matchedCode, "%s 1 %d\r", MATCHED_RES_CODE, room.currentPlayer);
   send(room.player2.cfd, matchedCode, strlen(matchedCode), 0);
 }
 
@@ -90,7 +94,7 @@ void sendDrawResponse(Room room)
   char drawCode[100];
   char encodedBoard[10];
   stringifyBoard(encodedBoard, room.board);
-  sprintf(drawCode, "%s %s\n", DRAW_CODE, encodedBoard);
+  sprintf(drawCode, "%s %s\r", DRAW_RES_CODE, encodedBoard);
   send(room.player1.cfd, drawCode, strlen(drawCode), 0);
   send(room.player2.cfd, drawCode, strlen(drawCode), 0);
 }
@@ -100,7 +104,7 @@ void sendWinResponse(Room room)
   char winCode[100];
   char encodedBoard[10];
   stringifyBoard(encodedBoard, room.board);
-  sprintf(winCode, "%s %d %s\n", WIN_CODE, room.currentPlayer, encodedBoard);
+  sprintf(winCode, "%s %d %s\r", WIN_RES_CODE, room.currentPlayer, encodedBoard);
   send(room.player1.cfd, winCode, strlen(winCode), 0);
   send(room.player2.cfd, winCode, strlen(winCode), 0);
 }
@@ -110,10 +114,16 @@ void sendNextTurnResponse(Room room)
   char nextCode[100];
   char encodedBoard[10];
   stringifyBoard(encodedBoard, room.board);
-  sprintf(nextCode, "%s %d %s\n", NEXT_CODE, room.currentPlayer, encodedBoard);
+  sprintf(nextCode, "%s %d %s\r", NEXT_RES_CODE, room.currentPlayer, encodedBoard);
 
   send(room.player1.cfd, nextCode, strlen(nextCode), 0);
   send(room.player2.cfd, nextCode, strlen(nextCode), 0);
+}
+
+void sendQuitResponse(Room room)
+{
+  send(room.player1.cfd, QUIT_RES_CODE, strlen(QUIT_RES_CODE), 0);
+  send(room.player2.cfd, QUIT_RES_CODE, strlen(QUIT_RES_CODE), 0);
 }
 
 int isMyTurn(Room room, pthread_t selfID)
@@ -148,7 +158,7 @@ void *handleClient(void *arg)
   {
     // Set new player to waiting
     waitingPlayer = &newPlayer;
-    send(cfd, WAIT_CODE, strlen(WAIT_CODE), 0);
+    send(cfd, WAIT_RES_CODE, strlen(WAIT_RES_CODE), 0);
   }
   else
   {
@@ -169,33 +179,34 @@ void *handleClient(void *arg)
     memset(buffer, 0, sizeof(buffer));
     result = recv(cfd, buffer, sizeof(buffer), 0);
     clearInput(buffer);
-    if (roomIndex == -1)
+    if (result > 0 && roomIndex == -1)
     {
       roomIndex = findRoom(rooms, newPlayer.username);
-      // Not found any room but client sent position
+      // Not found any room but client sent move
       if (roomIndex == -1)
       {
-        send(cfd, WAIT_CODE, strlen(WAIT_CODE), 0);
+        send(cfd, WAIT_RES_CODE, strlen(WAIT_RES_CODE), 0);
         continue;
       }
     }
-    if (result <= 0 || strcasecmp(buffer, QUIT_CODE) == 0)
+    if (result <= 0 || strcasecmp(buffer, QUIT_REQ_CODE) == 0)
       break;
 
     // Check turn
     if (!isMyTurn(rooms[roomIndex], myThreadID))
     {
-      send(cfd, WAIT_CODE, strlen(WAIT_CODE), 0);
+      send(cfd, WAIT_RES_CODE, strlen(WAIT_RES_CODE), 0);
       continue;
     }
 
-    // Update current state
-    int position = atoi(buffer);
-    if (!isValidMove(rooms[roomIndex].board, position))
+    // Check move
+    if (!isValidMove(rooms[roomIndex].board, buffer))
     {
-      send(cfd, INVALID_MOVE_CODE, strlen(INVALID_MOVE_CODE), 0);
+      send(cfd, INVALID_MOVE_RES_CODE, strlen(INVALID_MOVE_RES_CODE), 0);
       continue;
     }
+    // Update current state
+    int position = buffer[5] - '0';
     rooms[roomIndex].board[position] = rooms[roomIndex].currentPlayer == 0 ? 'X' : 'O';
     if (isDraw(rooms[roomIndex].board))
     {
@@ -217,14 +228,13 @@ void *handleClient(void *arg)
       // Send back next state
       sendNextTurnResponse(rooms[roomIndex]);
     }
-
-    printBoard(rooms[roomIndex].board);
   }
 
+  sendQuitResponse(rooms[roomIndex]);
   pthread_t id = getOponentThreadID(rooms[roomIndex], myThreadID);
   resetRoom(&rooms[roomIndex]);
   numRooms--;
-  printf("Cancling thread %d\n", (int)id);
+
   pthread_cancel(id);
   pthread_cleanup_pop(1);
   return NULL;

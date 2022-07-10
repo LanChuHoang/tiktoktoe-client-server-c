@@ -1,8 +1,11 @@
 #include <string.h>
+#include <ctype.h>
+#include "requestCode.h"
 
 void clearInput(char *text)
 {
-  text[strlen(text) - 1] = '\0';
+  if (text[strlen(text) - 1] == '\0')
+    text[strlen(text) - 1] = '\0';
 }
 
 int isDraw(char *board)
@@ -52,8 +55,26 @@ void printBoard(char *board)
   }
 }
 
-int isValidMove(char *board, int position)
+void printEmptyBoard()
 {
+  for (int i = 0; i < 9; ++i)
+  {
+    printf("_ ");
+    if ((i + 1) % 3 == 0)
+      printf("\n");
+  }
+}
+
+int isValidLoginCommand(char *request)
+{
+  return strlen(request) > 6 && strncasecmp(request, LOGIN_REQ_CODE, 5) == 0;
+}
+
+int isValidMove(char *board, char *request)
+{
+  if (strlen(request) <= 5 || strncasecmp(request, MOVE_REQ_CODE, 4) != 0 || !isdigit(request[5]))
+    return 0;
+  int position = request[5] - '0';
   return position >= 0 && position <= 8 && board[position] == 0;
 }
 

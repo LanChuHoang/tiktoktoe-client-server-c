@@ -1,0 +1,3 @@
+#define QUIT_REQ_CODE "QUIT"
+#define LOGIN_REQ_CODE "LOGIN"
+#define MOVE_REQ_CODE "MOVE"
